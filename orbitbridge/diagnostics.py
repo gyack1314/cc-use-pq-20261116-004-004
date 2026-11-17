@@ -6,10 +6,12 @@ import sqlite3
 from pathlib import Path
 from typing import Any
 
-from . import catalog, protocol, store
+from . import catalog, credentials, protocol, store
 
 
-def inspect_packet(connection: sqlite3.Connection, source: str | Path) -> dict[str, Any]:
+def inspect_packet(connection: sqlite3.Connection, source: str | Path,
+                   authority: credentials.AdmissionAuthority | None = None,
+                   *, when: str | None = None) -> dict[str, Any]:
     path = Path(source)
     try:
         data = path.read_bytes()
@@ -40,18 +42,30 @@ def inspect_packet(connection: sqlite3.Connection, source: str | Path) -> dict[s
         status = "gap"
     else:
         status = "old"
-    return {"source_name": path.name, "status": status, "station_id": station_id, "sequence": sequence,
-            "packet_id": identity, "raw_sha256": digest, "record_count": packet.envelope.record_count,
-            "committed_sequence": station["committed_sequence"] if station else None,
-            "prior_batch_id": previous["batch_id"] if previous else None}
+    result = {"source_name": path.name, "status": status, "station_id": station_id, "sequence": sequence,
+              "packet_id": identity, "raw_sha256": digest, "record_count": packet.envelope.record_count,
+              "committed_sequence": station["committed_sequence"] if station else None,
+              "prior_batch_id": previous["batch_id"] if previous else None}
+    if authority is not None:
+        timestamp = when or catalog.utc_now()
+        try:
+            sidecar = credentials.read_sidecar(path)
+        except credentials.CredentialError as exc:
+            result["admission"] = {"admitted": False, "code": exc.code, "message": str(exc),
+                                   "credential_id": None, "key_fingerprint": None, "revoked_at": None}
+        else:
+            result["admission"] = authority.decide(packet, sidecar, when=timestamp).as_dict()
+    return result
 
 
-def inspect_directory(connection: sqlite3.Connection, directory: str | Path) -> dict[str, Any]:
+def inspect_directory(connection: sqlite3.Connection, directory: str | Path,
+                      authority: credentials.AdmissionAuthority | None = None,
+                      *, when: str | None = None) -> dict[str, Any]:
     root = Path(directory)
     if not root.is_dir():
         raise ValueError("诊断目录不存在")
     files = [entry for entry in sorted(root.iterdir()) if entry.is_file() and entry.suffix.lower() == ".jsonl"]
-    results = [inspect_packet(connection, entry) for entry in files]
+    results = [inspect_packet(connection, entry, authority, when=when) for entry in files]
     statuses: dict[str, int] = {}
     for result in results:
         key = result["status"]

@@ -8,7 +8,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
-from . import catalog, ingest, protocol, store
+from . import catalog, credentials, ingest, protocol, store
 
 MAX_MANIFEST_BYTES = 1_000_000
 MAX_FILES = 500
@@ -108,7 +108,8 @@ def read_manifest(path: str | Path) -> Manifest:
         raise ManifestError("manifest_unreadable", "无法读取清单文件") from exc
 
 
-def _inspect_entry(root: Path, entry: ManifestEntry) -> dict[str, Any]:
+def _inspect_entry(root: Path, entry: ManifestEntry, authority: credentials.AdmissionAuthority | None,
+                   when: str) -> dict[str, Any]:
     path = root / entry.file
     if not path.is_file() or path.is_symlink():
         return {**entry.as_dict(), "status": "missing"}
@@ -125,15 +126,29 @@ def _inspect_entry(root: Path, entry: ManifestEntry) -> dict[str, Any]:
         return {**entry.as_dict(), "status": "invalid_packet", "reason": exc.code}
     if packet.envelope.station_id != entry.station_id or packet.envelope.sequence != entry.sequence:
         return {**entry.as_dict(), "status": "identity_mismatch"}
-    return {**entry.as_dict(), "status": "ready", "packet_id": protocol.packet_identity(packet),
-            "record_count": packet.envelope.record_count}
+    result = {**entry.as_dict(), "status": "ready", "packet_id": protocol.packet_identity(packet),
+              "record_count": packet.envelope.record_count}
+    if authority is not None:
+        try:
+            sidecar = credentials.read_sidecar(path)
+        except credentials.CredentialError as exc:
+            return {**result, "status": "admission_denied", "admission_code": exc.code,
+                    "credential_id": None}
+        decision = authority.decide(packet, sidecar, when=when)
+        result["admission"] = decision.as_dict()
+        if not decision.admitted:
+            return {**result, "status": "admission_denied", "admission_code": decision.code,
+                    "credential_id": decision.credential_id}
+    return result
 
 
-def preflight(connection: sqlite3.Connection, manifest_path: str | Path, *, strict: bool = False) -> dict[str, Any]:
+def preflight(connection: sqlite3.Connection, manifest_path: str | Path, *, strict: bool = False,
+              authority: credentials.AdmissionAuthority | None = None, when: str | None = None) -> dict[str, Any]:
+    timestamp = when or catalog.utc_now()
     manifest_file = Path(manifest_path)
     manifest = read_manifest(manifest_file)
     root = manifest_file.parent
-    inspected = [_inspect_entry(root, entry) for entry in manifest.entries]
+    inspected = [_inspect_entry(root, entry, authority, timestamp) for entry in manifest.entries]
     for item in inspected:
         if item["status"] != "ready":
             continue
@@ -175,8 +190,12 @@ def preflight(connection: sqlite3.Connection, manifest_path: str | Path, *, stri
 
 
 def execute_manifest(connection: sqlite3.Connection, manifest_path: str | Path, *, strict: bool = False,
+                     authority: credentials.AdmissionAuthority | None = None,
                      when: str | None = None) -> dict[str, Any]:
-    plan = preflight(connection, manifest_path, strict=strict)
+    timestamp = when or catalog.utc_now()
+    plan = preflight(connection, manifest_path, strict=strict, authority=authority, when=timestamp)
+    if authority is None and any(entry["status"] == "ready" for entry in plan["entries"]):
+        raise ManifestError("authority_missing", "执行清单必须提供验真密钥库")
     root = Path(manifest_path).parent
     results = []
     for entry in plan["entries"]:
@@ -191,7 +210,7 @@ def execute_manifest(connection: sqlite3.Connection, manifest_path: str | Path, 
             results.append({"file": entry["file"], "status": "skipped", "reason": "changed_after_preflight"})
             continue
         try:
-            outcome = ingest.ingest_file(connection, path, when=when)
+            outcome = ingest.ingest_file(connection, path, authority, when=timestamp)
             results.append({"file": entry["file"], **outcome.as_dict()})
         except ingest.IngestError as exc:
             results.append({"file": entry["file"], **exc.as_dict()})

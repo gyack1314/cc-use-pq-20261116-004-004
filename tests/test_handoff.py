@@ -6,7 +6,7 @@ from helpers import DatabaseCase, STAMP, observation, packet
 
 class HandoffTests(DatabaseCase):
     def _create(self):
-        result = ingest.ingest_bytes(self.db, packet(), when=STAMP)
+        result = self.ingest_signed(packet(), when=STAMP)
         item = handoff.list_handoffs(self.db)[0]
         return result, item
 
@@ -67,7 +67,7 @@ class HandoffTests(DatabaseCase):
 
     def test_queue_pagination_is_stable(self):
         self._create()
-        ingest.ingest_bytes(self.db, packet(2, [observation("sim-2")]), when=STAMP)
+        self.ingest_signed(packet(2, [observation("sim-2")]), when=STAMP)
         first = handoff.list_handoffs(self.db, limit=1)
         second = handoff.list_handoffs(self.db, limit=1, after_id=first[0]["handoff_id"])
         self.assertEqual(len(first), 1)

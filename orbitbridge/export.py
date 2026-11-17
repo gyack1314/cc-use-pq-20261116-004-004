@@ -52,7 +52,8 @@ def snapshot_rows(connection: sqlite3.Connection, subscription_id: str, *, start
             maximum = end_id
         query = ("SELECT h.handoff_id,h.status,h.created_at,h.acknowledged_at,h.operator,h.subscription_id,"
                  "o.observation_id,o.station_id,o.external_id,o.observed_at,o.region,o.latitude,o.longitude,"
-                 "o.confidence,o.severity,o.source,o.fingerprint,b.batch_id,b.sequence,b.packet_id,b.digest "
+                 "o.confidence,o.severity,o.source,o.fingerprint,b.batch_id,b.sequence,b.packet_id,b.digest,"
+                 "b.credential_id,b.key_fingerprint AS credential_fingerprint "
                  "FROM handoffs h JOIN observations o USING(observation_id) "
                  "JOIN batches b ON b.batch_id=o.batch_id "
                  "WHERE h.subscription_id=? AND h.handoff_id>? AND h.handoff_id<=?")

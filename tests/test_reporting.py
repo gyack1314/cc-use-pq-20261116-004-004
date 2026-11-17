@@ -8,8 +8,8 @@ from helpers import DatabaseCase, STAMP, observation, packet
 
 class ReportingTests(DatabaseCase):
     def _seed_two(self):
-        first = ingest.ingest_bytes(self.db, packet(), when=STAMP)
-        second = ingest.ingest_bytes(self.db, packet(2, [observation("sim-2")]), when=STAMP)
+        first = self.ingest_signed(packet(), when=STAMP)
+        second = self.ingest_signed(packet(2, [observation("sim-2")]), when=STAMP)
         return first, second
 
     def test_export_contains_immutable_source_identifiers(self):
@@ -119,7 +119,7 @@ class ReportingTests(DatabaseCase):
 
     def test_diagnostics_distinguishes_duplicate_from_conflict(self):
         original = self.write_packet(1, name="original.jsonl")
-        ingest.ingest_file(self.db, original, when=STAMP)
+        ingest.ingest_file(self.db, original, self.authority, when=STAMP)
         changed = self.write_packet(1, [observation("changed")], name="changed.jsonl")
         self.assertEqual(diagnostics.inspect_packet(self.db, original)["status"], "duplicate")
         self.assertEqual(diagnostics.inspect_packet(self.db, changed)["status"], "sequence_conflict")

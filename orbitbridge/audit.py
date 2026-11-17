@@ -147,4 +147,31 @@ def verify_lineage(connection: sqlite3.Connection) -> list[str]:
                                   "FROM batches b JOIN station_cursors c USING(station_id)"):
         if row["sequence"] > row["committed_sequence"]:
             issues.append(f"uncommitted_batch:{row['batch_id']}")
+    # 凭据轮换/撤销不得抹除历史批次在接收当时的验真依据。
+    for row in connection.execute(
+        "SELECT b.batch_id,b.credential_id,c.status FROM batches b "
+        "LEFT JOIN station_credentials c ON c.credential_id=b.credential_id "
+        "WHERE b.credential_id IS NOT NULL AND c.credential_id IS NULL"
+    ):
+        issues.append(f"credential_lost:{row['batch_id']}")
     return issues
+
+
+def list_credentials(connection: sqlite3.Connection, station_id: str | None = None) -> list[dict[str, Any]]:
+    from . import credentials as credential_module
+    return credential_module.list_credentials(connection, station_id)
+
+
+def batch_credential_view(connection: sqlite3.Connection, batch_id: int) -> dict[str, Any] | None:
+    """值守人员核对某批次接收当时的非秘密验真依据。"""
+    batch = store.get_batch(connection, batch_id)
+    if batch is None:
+        return None
+    current = store.get_credential(connection, batch["credential_id"]) if batch["credential_id"] else None
+    return {"batch_id": batch_id, "credential_id": batch["credential_id"],
+            "key_fingerprint_at_receipt": batch["key_fingerprint"],
+            "current_status": current["status"] if current else "missing",
+            "fingerprint_unchanged": (current is not None
+                                      and current["key_fingerprint"] == batch["key_fingerprint"]),
+            "revoked_at": current["revoked_at"] if current else None,
+            "revoke_reason": current["revoke_reason"] if current else None}
